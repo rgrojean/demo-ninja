@@ -376,7 +376,8 @@ RULES:
 - Keep replacement text the same approximate length
 - Do NOT replace generic UI labels (like "Settings", "Dashboard", "Search", "Briefs", "Outline")
 - Do NOT replace numbers, dates, percentages, or metrics unless specifically asked
-- Make the demo feel authentic and tailored`;
+- Make the demo feel authentic and tailored
+- Return valid JSON only — escape special characters (newlines, quotes, backslashes) inside string values`;
 
 function buildUserPrompt(company, instructions, pageData) {
   let prompt = `I need to customize this web page for a demo with **${company}**.`;
@@ -386,6 +387,49 @@ function buildUserPrompt(company, instructions, pageData) {
   prompt += `\n\n--- PAGE HTML ---\n${pageData.pageHTML}`;
   prompt += `\n\n--- VISIBLE TEXT STRINGS (use these EXACT strings for "find" values) ---\n${JSON.stringify(pageData.visibleTexts, null, 2)}`;
   return prompt;
+}
+
+function parseJsonArray(text) {
+  // Extract the outermost JSON array from the response
+  const match = text.match(/\[[\s\S]*\]/);
+  if (!match) throw new Error('Could not find a JSON array in the AI response');
+
+  let json = match[0];
+
+  // Try parsing as-is first
+  try {
+    const parsed = JSON.parse(json);
+    if (Array.isArray(parsed)) return parsed;
+  } catch {}
+
+  // Repair pass: fix unescaped control characters inside JSON string values.
+  // Walk character-by-character, tracking whether we're inside a quoted string.
+  let repaired = '';
+  let inString = false;
+  for (let i = 0; i < json.length; i++) {
+    const ch = json[i];
+    const prev = json[i - 1];
+
+    if (ch === '"' && prev !== '\\') {
+      inString = !inString;
+      repaired += ch;
+    } else if (inString) {
+      // Escape raw newlines/tabs that the model left unescaped
+      if (ch === '\n') { repaired += '\\n'; }
+      else if (ch === '\r') { repaired += '\\r'; }
+      else if (ch === '\t') { repaired += '\\t'; }
+      else { repaired += ch; }
+    } else {
+      repaired += ch;
+    }
+  }
+
+  try {
+    const parsed = JSON.parse(repaired);
+    if (Array.isArray(parsed)) return parsed;
+  } catch {}
+
+  throw new Error('Could not parse replacements from AI response — invalid JSON');
 }
 
 async function callAI(company, instructions, pageData) {
@@ -407,11 +451,7 @@ async function callAI(company, instructions, pageData) {
     throw new Error(`Unknown provider: ${provider}`);
   }
 
-  const jsonMatch = responseText.match(/\[[\s\S]*\]/);
-  if (!jsonMatch) throw new Error('Could not parse replacements from AI response');
-
-  const parsed = JSON.parse(jsonMatch[0]);
-  if (!Array.isArray(parsed)) throw new Error('Expected an array of replacements');
+  const parsed = parseJsonArray(responseText);
   return parsed.filter(r => r.find && r.replace && typeof r.find === 'string' && typeof r.replace === 'string');
 }
 
