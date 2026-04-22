@@ -390,8 +390,11 @@ function buildUserPrompt(company, instructions, pageData) {
 }
 
 function parseJsonArray(text) {
-  // Extract the outermost JSON array from the response
-  const match = text.match(/\[[\s\S]*\]/);
+  // Strip markdown code fences if the model wrapped its response
+  let cleaned = text.replace(/```(?:json)?\s*/g, '').replace(/```\s*/g, '');
+
+  // Extract the outermost JSON array
+  const match = cleaned.match(/\[[\s\S]*\]/);
   if (!match) throw new Error('Could not find a JSON array in the AI response');
 
   let json = match[0];
@@ -414,7 +417,6 @@ function parseJsonArray(text) {
       inString = !inString;
       repaired += ch;
     } else if (inString) {
-      // Escape raw newlines/tabs that the model left unescaped
       if (ch === '\n') { repaired += '\\n'; }
       else if (ch === '\r') { repaired += '\\r'; }
       else if (ch === '\t') { repaired += '\\t'; }
@@ -427,6 +429,20 @@ function parseJsonArray(text) {
   try {
     const parsed = JSON.parse(repaired);
     if (Array.isArray(parsed)) return parsed;
+  } catch (e) {
+    console.error('[Demo Ninja] JSON repair failed:', e.message);
+    console.error('[Demo Ninja] First 500 chars of raw response:', text.substring(0, 500));
+  }
+
+  // Last resort: extract individual objects with regex
+  try {
+    const objects = [];
+    const objRegex = /\{\s*"find"\s*:\s*"((?:[^"\\]|\\.)*)"\s*,\s*"replace"\s*:\s*"((?:[^"\\]|\\.)*)"\s*\}/g;
+    let m;
+    while ((m = objRegex.exec(json)) !== null) {
+      objects.push({ find: JSON.parse(`"${m[1]}"`), replace: JSON.parse(`"${m[2]}"`) });
+    }
+    if (objects.length > 0) return objects;
   } catch {}
 
   throw new Error('Could not parse replacements from AI response — invalid JSON');
